@@ -3,70 +3,8 @@
 #include <chrono>
 #include <vector>
 #include <cassert>
-
-using namespace std;
-
-typedef unsigned char byte;
-
-class ScreenCapture
-{
-public:
-	ScreenCapture(int bitmapBitCount)
-	{
-		assert(bitmapBitCount >= 3 || bitmapBitCount <= 4);
-		height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-		width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-
-		screenImageData = createMatrixForDesktopSize(bitmapBitCount);
-
-		hdc = GetDC(NULL);
-		hDest = CreateCompatibleDC(hdc);
-		hbDesktop = CreateCompatibleBitmap(hdc, width, height);
-
-		// describe screen bitmap
-		bi.biSize = sizeof(BITMAPINFOHEADER);
-		bi.biWidth = width;
-		bi.biHeight = -height;
-		bi.biPlanes = 1;
-		bi.biBitCount = bitmapBitCount * 8;
-		bi.biCompression = BI_RGB;
-		bi.biSizeImage = 0;
-		bi.biXPelsPerMeter = 0;
-		bi.biYPelsPerMeter = 0;
-		bi.biClrUsed = 0;
-		bi.biClrImportant = 0;
-	}
-
-	void capture()
-	{
-		BitBlt(hDest, 0, 0, width, height, hdc, 0, 0, SRCCOPY);
-		GetDIBits(hDest, hbDesktop, 0, height, screenImageData, (BITMAPINFO *)&bi, DIB_RGB_COLORS);  //copy from hwindowCompatibleDC to hbwindow
-	}
-
-	inline byte* getData()
-	{
-		return screenImageData;
-	}
-
-	~ScreenCapture()
-	{
-		ReleaseDC(NULL, hdc);
-		DeleteDC(hDest);
-	}
-
-private:
-	BITMAPINFOHEADER  bi;
-	HDC hdc, hDest;
-	HBITMAP hbDesktop;
-	int width, height;
-	byte* screenImageData;
-
-	inline byte* createMatrixForDesktopSize(int bitmapBitsCount)
-	{
-		return new byte[height * width * sizeof(byte) * bitmapBitsCount];
-	}
-};
-
+#include "ScreenCapture.h"
+#include "UDPServer.h"
 
 
 int main(int argc, char **argv)
@@ -91,6 +29,10 @@ int main(int argc, char **argv)
 	const double HigherValueLimit = 0.017;
 	int howManyHigher = 0;
 
+	byte* screendata;
+	size_t screendatasize;
+
+
 	for (int TestIndex = 0; TestIndex < NumberOfTests; TestIndex++)
 	{
 		double CountSamples = 0;
@@ -98,7 +40,8 @@ int main(int argc, char **argv)
 		{
 			startTime = high_resolution_clock::now();
 
-			screenCapture.capture();
+			screenCapture.capture(screendata, screendatasize);
+
 
 			endTime = high_resolution_clock::now();
 
