@@ -5,6 +5,7 @@
 
 int UDPServer::WSInitializerCount = 0;
 #define SYSTEM_INIT_ERROR -1
+#define SEND_ERROR 0
 
 void UDPServer::Init()
 {
@@ -37,10 +38,12 @@ void UDPServer::Finalize()
 
 UDPServer::UDPServer(int localport)
 {
-	UDPServer::Init();
-	mSocket = SDLNet_UDP_Open(localport);
-	mLocalPort = localport;
-	mReceiveThread = std::thread(&UDPServer::receivingThread, this);
+	localInit(localport);
+}
+
+UDPServer::UDPServer()
+{
+	localInit(0);
 }
 
 
@@ -51,34 +54,41 @@ UDPServer::~UDPServer()
 }
 
 
-bool UDPServer::broadcast(byte * buffer, size_t size)
-{
-	return false;
-}
-
-bool UDPServer::bindbroadcast(const char* ip, int port, int localport)
-{
-	enableBroadCast();
-	mBroadcastPeer.sin_family = AF_INET;
-	mBroadcastPeer.sin_port = htons(broadcastport);
-	mBroadcastPeer.sin_addr.s_addr = inet_addr(broadcastip);
-
-	//Prepare the sockaddr_in structure
-	mServerAddr.sin_family = AF_INET;
-	mServerAddr.sin_addr.s_addr = INADDR_ANY;
-	mServerAddr.sin_port = htons(localport);
-
-	//Bind
-	struct sockaddr* serverAddrCasted = reinterpret_cast<struct sockaddr*>(&mServerAddr);
-	if (bind(mSocket, serverAddrCasted, sizeof(mServerAddr)) == SOCKET_ERROR)
-	{
-		printf("Bind failed with error code : %d", WSAGetLastError());
-		exit(EXIT_FAILURE);
+bool UDPServer::bind(int remotePort)
+{	
+	mRemotePort = remotePort;
+	SDLNet_ResolveHost(&mIPaddress, NULL, mRemotePort);
+	// Bind address to the first free channel
+	mChannel = SDLNet_UDP_Bind(mSocket, -1, &mIPaddress);
+	if (mChannel == -1) {
+		printf("SDLNet_UDP_Bind: %s\n", SDLNet_GetError());
+		// do something because we failed to bind
+		return false;
 	}
-	puts("Bind done");
-
 	return true;
 }
+
+bool UDPServer::broadcast(byte * buffer, size_t size)
+{
+	setupPacketSize(size);
+	// send a packet using a UDPsocket, using the packet's channel as the channel
+	if (mPeers.size() > 0)
+	{
+		int numsent = SDLNet_UDP_Send(mSocket, mChannel, mPacket);
+		if (numsent == SEND_ERROR) {
+			printf("SDLNet_UDP_Send: %s\n", SDLNet_GetError());
+			// do something because we failed to send
+			// this may just be because no addresses are bound to the channel...
+			return false;
+		}
+
+		return true;
+	}
+	
+	return true;
+}
+
+
 
 void UDPServer::onReceive(onReceiveFromClientCallback callback)
 {
@@ -87,56 +97,58 @@ void UDPServer::onReceive(onReceiveFromClientCallback callback)
 	guard.unlock();
 }
 
+void UDPServer::localInit(int localport)
+{
+	UDPServer::Init();
+	mChannel = -1;
+	mPacket = NULL;
+	mSocket = SDLNet_UDP_Open(localport);
+	mLocalPort = localport;
+	mReceiveThread = std::thread(&UDPServer::receivingThread, this);
+}
+
+void UDPServer::setupPacketSize(size_t size)
+{
+	if (mPacket == NULL)
+	{
+		mPacket = SDLNet_AllocPacket(size);
+	}
+	else
+	{
+		if (mPacket->maxlen < size)
+		{
+			int allocatedSize = SDLNet_ResizePacket(mPacket, size);
+			if (allocatedSize < size)
+			{
+				printf("SDLNet_ResizePacket: %s\n", SDLNet_GetError());
+			}
+		}
+	}
+}
+
 void UDPServer::receivingThread()
 {
-	//try to receive some data, this is a blocking call
-	long receivedLength = 0;
-	std::vector<byte> bufferReceivedData;
-	const size_t bufferLength = 1024;
-	char bufferSlice[bufferLength];
-	struct sockaddr_in peer;
-	int peerStructureSize = sizeof(peer);
-	bufferReceivedData.resize(bufferLength);
-	int currentBufferDataSize = bufferLength;
-
+	// Allocate memory for incoming package
+	UDPpacket *packet = SDLNet_AllocPacket(1024);
+	
 	while (true)
 	{
-		int receivedTotalLength = 0;
-		int receivedCurrentIndex = 0;
-		while ((receivedLength = recvfrom(mSocket, bufferSlice, bufferLength, 0, (struct sockaddr *) &peer, &peerStructureSize)) > 0)
+		int receiveResponse = 0;
 		{
-			// update buffer needed size
-			receivedTotalLength += receivedLength;
-
-			// verify if need to update buffer length
-			if (receivedTotalLength > currentBufferDataSize)
+			
+			do
 			{
-				bufferReceivedData.resize(receivedTotalLength);
-				printf("Buffer data resized to %d byte\n", receivedTotalLength);
-			}
+				std::lock_guard<std::mutex> lock_do_while_scope(mReceiveMutex);
+				receiveResponse = SDLNet_UDP_Recv(mSocket, packet);
+				
+				// Received data successfully
+				if (receiveResponse == 1)
+				{					
+					//TODO: Do something with peer data
+					mPeers.push_back(packet->address);
+				}
 
-			// copy buffer slice to buffer data
-			memcpy(&bufferReceivedData[receivedCurrentIndex], bufferSlice, receivedLength);
-
-			// update next index of buffer data to apply buffer slice
-			receivedCurrentIndex += receivedLength;
-		}
-
-		// if some error occured don't receive the message
-		if (receivedLength == SOCKET_ERROR)
-		{
-			printf("Socket error on receiving\n");
-		}
-		else
-		{
-			// add to peers list
-			mPeersAddr.push_back(peer);
-
-			// all callbacks receive data received
-			for (auto receiveCallback : mOnReceiveCallbacks)
-			{
-				receiveCallback(peer, bufferReceivedData.data(), bufferReceivedData.size());
-			}
+			} while (receiveResponse > 0);
 		}
 	}
 }

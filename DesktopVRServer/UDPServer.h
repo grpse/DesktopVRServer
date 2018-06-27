@@ -13,10 +13,12 @@ class UDPServer
 {
 public:
 	UDPServer(int localport);
+	UDPServer();
 	~UDPServer();
 
+	bool bind(int remotePort);
 	bool broadcast(byte * buffer, size_t size);
-	bool bindbroadcast(const char* ip, int port, int localport);
+
 	void onReceive(onReceiveFromClientCallback callback);
 
 private:
@@ -26,15 +28,22 @@ private:
 	static void Init();
 	static void Finalize();
 
+
 	UDPsocket mSocket;
+	IPaddress mIPaddress;
+	UDPpacket *mPacket;
+	int mChannel;
 	int mLocalPort;
+	int mRemotePort;
 
 	std::vector<onReceiveFromClientCallback> mOnReceiveCallbacks;
 
-	std::vector<struct SocketAddressIn> mPeersAddr;
+	std::vector<IPaddress> mPeers;
 	std::mutex mReceiveMutex;
 	std::thread mReceiveThread;
 
+	void localInit(int localport);
+	void setupPacketSize(size_t size);
 	void receivingThread();
 };
 
