@@ -1,25 +1,19 @@
 #include <cassert>
 #include "UDPServer.h"
-#include <SDL.h>
-#include <SDL_net.h>
 
 int UDPServer::WSInitializerCount = 0;
 #define SYSTEM_INIT_ERROR -1
 #define SEND_ERROR 0
+#define MAX_PACKET_SIZE 1024
+WSADATA wsaData;
 
 void UDPServer::Init()
 {
 	if (UDPServer::WSInitializerCount == 0)
 	{
-		if (SDL_Init(0) == SYSTEM_INIT_ERROR)
-		{
-			printf("Error init SDL\n");
-		}
-
-		if (SDLNet_Init() == SYSTEM_INIT_ERROR)
-		{
-			printf("Error init SDL Net\n");
-		}
+		int windowsSocketVersion = MAKEWORD(2, 2);
+		printf("Windows Socket Version: %u.%u\n", windowsSocketVersion, windowsSocketVersion >> 2);
+		WSAStartup(windowsSocketVersion, &wsaData);
 	}
 
 	UDPServer::WSInitializerCount += 1;
@@ -31,64 +25,81 @@ void UDPServer::Finalize()
 
 	if (UDPServer::WSInitializerCount == 0)
 	{
-		SDLNet_Quit();
-		SDL_Quit();
+		WSACleanup();
 	}
+}
+
+UDPServer::UDPServer(const char* ip, int localport)
+{
+	UDPServer::Init();	
+	struct ip_mreq mreq; // for receiving from multicast
+	char message[50];
+
+	/* set up socket */
+	mSocket = socket(AF_INET, SOCK_DGRAM, 0);
+	if (mSocket < 0) {
+		perror("socket");
+		exit(1);
+	}
+	memset((void *)&mServerAddress, NULL, sizeof(struct sockaddr_in));
+	mServerAddress.sin_family = AF_INET;
+	mServerAddress.sin_addr.s_addr = ip ? inet_addr(ip) : htonl(INADDR_ANY);
+	mServerAddress.sin_port = htons(localport);
+	memset(&(mServerAddress.sin_zero), 0, 8);
+	addrlen = sizeof(mServerAddress);
+	
+	mPort = localport;
 }
 
 UDPServer::UDPServer(int localport)
 {
-	localInit(localport);
+	UDPServer::Init();
+	memset((void *)&mServerAddress, NULL, sizeof(struct sockaddr_in));
+	/* set up socket */
+	mSocket = socket(AF_INET, SOCK_DGRAM, 0);
+	if (mSocket < 0) {
+		perror("socket");
+		exit(1);
+	}
+	mServerAddress.sin_family = AF_INET;
+	mServerAddress.sin_port = htons(localport);
+	mServerAddress.sin_addr.s_addr = INADDR_ANY;
+	memset(&(mServerAddress.sin_zero), 0, 8);
 }
-
-UDPServer::UDPServer()
-{
-	localInit(0);
-}
-
 
 UDPServer::~UDPServer()
 {
-	SDLNet_UDP_Close(mSocket);
+	closesocket(mSocket);
 	UDPServer::Finalize();
 }
 
-
-bool UDPServer::bind(int remotePort)
-{	
-	mRemotePort = remotePort;
-	SDLNet_ResolveHost(&mIPaddress, NULL, mRemotePort);
-	// Bind address to the first free channel
-	mChannel = SDLNet_UDP_Bind(mSocket, -1, &mIPaddress);
-	if (mChannel == -1) {
-		printf("SDLNet_UDP_Bind: %s\n", SDLNet_GetError());
-		// do something because we failed to bind
-		return false;
-	}
-	return true;
-}
-
-bool UDPServer::broadcast(byte * buffer, size_t size)
+bool UDPServer::multicast(byte * buffer, size_t size, size_t& sent)
 {
-	setupPacketSize(size);
-	// send a packet using a UDPsocket, using the packet's channel as the channel
-	if (mPeers.size() > 0)
+	if (size > MAX_PACKET_SIZE)
 	{
-		int numsent = SDLNet_UDP_Send(mSocket, mChannel, mPacket);
-		if (numsent == SEND_ERROR) {
-			printf("SDLNet_UDP_Send: %s\n", SDLNet_GetError());
-			// do something because we failed to send
-			// this may just be because no addresses are bound to the channel...
-			return false;
-		}
+		byte* bufferPtr = buffer;
+		int countBytesSent = 0;
+		int totalSent = 0;
 
-		return true;
+		do {
+			countBytesSent = sendto(mSocket, (const char*)bufferPtr, MAX_PACKET_SIZE, 0, (struct sockaddr *) &mServerAddress, sizeof(struct sockaddr_in));
+			printf("Sent chunk: %d\n", countBytesSent);
+			bufferPtr = (bufferPtr + countBytesSent);
+			totalSent += countBytesSent;
+
+		} while (countBytesSent > 0 && totalSent < size);
+
+		sent = totalSent;
+		return totalSent >= 0;
 	}
-	
-	return true;
+	else {
+		int countBytesSent = sendto(mSocket, (const char*)buffer, size, 0, (struct sockaddr *) &mServerAddress, sizeof(struct sockaddr_in));
+		sent = countBytesSent;
+		return countBytesSent >= 0;
+	}
+
+	// return (sent = sendto(mSocket, (const char*)buffer, size, 0, (struct sockaddr *) &mServerAddress, sizeof(struct sockaddr_in))) < 0;
 }
-
-
 
 void UDPServer::onReceive(onReceiveFromClientCallback callback)
 {
@@ -97,58 +108,92 @@ void UDPServer::onReceive(onReceiveFromClientCallback callback)
 	guard.unlock();
 }
 
-void UDPServer::localInit(int localport)
+void UDPServer::startReceiver()
 {
-	UDPServer::Init();
-	mChannel = -1;
-	mPacket = NULL;
-	mSocket = SDLNet_UDP_Open(localport);
-	mLocalPort = localport;
-	mReceiveThread = std::thread(&UDPServer::receivingThread, this);
+	mReceiveThread = std::thread(std::bind(&UDPServer::receivingThread, this));
 }
 
-void UDPServer::setupPacketSize(size_t size)
+void UDPServer::bindServer()
 {
-	if (mPacket == NULL)
+	int bindResponse = bind(mSocket, (struct sockaddr *)&mServerAddress, sizeof(struct sockaddr_in));	
+	if (bindResponse < 0) 
 	{
-		mPacket = SDLNet_AllocPacket(size);
+		perror("ERROR on binding");
+		closesocket(mSocket);
 	}
-	else
+}
+
+void UDPServer::broadcastMessage(byte * bytes, size_t length)
+{
+	size_t peer_struct_size = sizeof(struct sockaddr_in);
+	struct sockaddr* peer_ptr = NULL;
+
+	for (auto peerKeyValue : mPeers)
 	{
-		if (mPacket->maxlen < size)
+		struct sockaddr* peer_ptr = (struct sockaddr*) &peerKeyValue.second;
+		unsigned long amountOfBytes = length;
+
+		int sentBytesOfBytesThatShouldSend = sendto(mSocket, (const char*)&amountOfBytes, sizeof(unsigned long), 0, peer_ptr, peer_struct_size);
+		if (length > MAX_PACKET_SIZE)
 		{
-			int allocatedSize = SDLNet_ResizePacket(mPacket, size);
-			if (allocatedSize < size)
+			byte* bufferPtr = bytes;
+			int countBytesSent = 0;
+			int totalSent = 0;
+			do {
+				countBytesSent = sendto(mSocket, (const char*)bufferPtr, MAX_PACKET_SIZE, 0, peer_ptr, peer_struct_size);
+				bufferPtr = (bufferPtr + countBytesSent);
+				totalSent += countBytesSent;
+			} while (countBytesSent > 0 && totalSent < length);
+
+			if (countBytesSent < 0) {
+				removePeer(peerKeyValue.first);
+			}
+		}
+		else {
+			int countBytesSent = sendto(mSocket, (const char*)bytes, length, 0, peer_ptr, peer_struct_size);
+		}
+	}
+}
+
+bool UDPServer::isOpen()
+{
+	return true;
+}
+
+void UDPServer::receivingThread()
+{
+	struct sockaddr_in peerConnection;
+	int sockAddrStructSize = sizeof(peerConnection);
+	struct sockaddr* peerConnectionPtr = (struct sockaddr*)&peerConnection;
+
+	const size_t bufferSize = 1024;
+	byte buffer[bufferSize];
+
+	while (isOpen())
+	{
+		{	/// Locked by scope guard
+			std::lock_guard<std::mutex> scopeGuard(mReceiveMutex);
+			int bytesReceived = recvfrom(mSocket, (char*) buffer, bufferSize, 0, peerConnectionPtr, &sockAddrStructSize);
+			ULONG peerAddress = peerConnection.sin_addr.s_addr;
+			u_short peerPort = peerConnection.sin_port;
+			auto peerKey = std::make_pair(peerAddress, peerPort);
+			auto peerIterator = mPeers.find(peerKey);
+			if (bytesReceived > 0 && peerIterator == mPeers.end())
 			{
-				printf("SDLNet_ResizePacket: %s\n", SDLNet_GetError());
+				printf("Received: %s\n", buffer);
+				printf("Adding Peer\n");
+				// received some data
+				// TODO: receive data from socket to control mouse pointer
+				// store peer address
+				mPeers[peerKey] = peerConnection;
 			}
 		}
 	}
 }
 
-void UDPServer::receivingThread()
+void UDPServer::removePeer(std::pair<ULONG, u_short> peerKey)
 {
-	// Allocate memory for incoming package
-	UDPpacket *packet = SDLNet_AllocPacket(1024);
-	
-	while (true)
-	{
-		int receiveResponse = 0;
-		{
-			
-			do
-			{
-				std::lock_guard<std::mutex> lock_do_while_scope(mReceiveMutex);
-				receiveResponse = SDLNet_UDP_Recv(mSocket, packet);
-				
-				// Received data successfully
-				if (receiveResponse == 1)
-				{					
-					//TODO: Do something with peer data
-					mPeers.push_back(packet->address);
-				}
-
-			} while (receiveResponse > 0);
-		}
-	}
+	auto peerIter = mPeers.find(peerKey);
+	if (peerIter != mPeers.end())
+		mPeers.erase(peerIter);
 }

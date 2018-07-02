@@ -45,5 +45,4 @@ void ScreenCapture::capture(byte*& outImageData, size_t& outScreenImageDataSize)
 	GetDIBits(hDest, hbDesktop, 0, height, screenImageData, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
 	outImageData = screenImageData;
 	outScreenImageDataSize = screenImageDataSize;
-
 }

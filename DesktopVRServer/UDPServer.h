@@ -1,25 +1,30 @@
 #pragma once
 #include "Defines.h"
-#include <stdio.h>
+#include <cstdio>
+#include <cctype>
 #include <functional>
 #include <thread>
 #include <vector>
 #include <mutex>
-#include <SDL_net.h>
+#include <winsock.h>
+#include <tuple>
+#include <map>
 
-typedef std::function<void(UDPsocket peersocket, byte* buffer, size_t bufferLength)> onReceiveFromClientCallback;
+typedef std::function<void(byte* buffer, size_t bufferLength)> onReceiveFromClientCallback;
 
 class UDPServer
 {
 public:
+	UDPServer(const char* ip, int localport);
 	UDPServer(int localport);
-	UDPServer();
 	~UDPServer();
 
-	bool bind(int remotePort);
-	bool broadcast(byte * buffer, size_t size);
-
+	bool multicast(byte * buffer, size_t size, size_t& sent);
 	void onReceive(onReceiveFromClientCallback callback);
+	void startReceiver();
+	void bindServer();
+	void broadcastMessage(byte* bytes, size_t length);
+	bool isOpen();
 
 private:
 
@@ -27,23 +32,19 @@ private:
 
 	static void Init();
 	static void Finalize();
+	struct sockaddr_in mServerAddress;
+	int addrlen;
 
-
-	UDPsocket mSocket;
-	IPaddress mIPaddress;
-	UDPpacket *mPacket;
-	int mChannel;
-	int mLocalPort;
-	int mRemotePort;
+	SOCKET mSocket;
+	int mPort;
 
 	std::vector<onReceiveFromClientCallback> mOnReceiveCallbacks;
 
-	std::vector<IPaddress> mPeers;
+	std::map<std::pair<ULONG, u_short>, struct sockaddr_in> mPeers;
 	std::mutex mReceiveMutex;
 	std::thread mReceiveThread;
 
-	void localInit(int localport);
-	void setupPacketSize(size_t size);
 	void receivingThread();
+	void removePeer(std::pair<ULONG, u_short> peerKey);
 };
 

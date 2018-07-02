@@ -41,5 +41,8 @@
     <ClInclude Include="TestClass.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="MULTICAST_REFERENCE.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

@@ -17,6 +17,16 @@ public:
 		return screenImageData;
 	}
 
+	inline size_t getDataLength()
+	{
+		return screenImageDataSize;
+	}
+
+	inline const BITMAPINFOHEADER& getBitmapHeader()
+	{
+		return bi;
+	}
+
 private:
 	BITMAPINFOHEADER  bi;
 	HDC hdc, hDest;
